@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ajustador Runner PRO Engine</title>
+<style>
+  body{
+    margin:0;
+    background:#0f172a;
+    min-height:100vh;
+    font-family:'Courier New', monospace;
+    color:white;
+  }
+
+  .page{
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    align-items:center;
+    gap:10px;
+    padding:12px;
+    box-sizing:border-box;
+  }
+
+  canvas{
+    border:6px solid #facc15;
+    background:#000;
+    max-width:95vw;
+    height:auto;
+    image-rendering:pixelated;
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <canvas id="game" width="900" height="500"></canvas>
+
+  <div style="max-width:900px; width:95vw; color:#94a3b8; font-size:11px; text-align:center; line-height:1.45;">
+    *Monedero electrónico válido al contratar tu seguro de automóvil con Riccardo Gambirasi. Aplica únicamente en pago anual y con aseguradoras participantes. Sujeto a validación y términos y condiciones.
+  </div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// IMPORTANTE:
+// Cambia este número por tu WhatsApp real con lada de México.
+// Ejemplo CDMX: 5215512345678
+const WHATSAPP_NUMBER = '5215561167830';
+
+// Música 8-bit generada por el navegador
+let audioCtx = null;
+let musicStarted = false;
+let musicTimer = null;
+let musicStep = 0;
+const melody = [220, 220, 330, 220, 392, 330, 247, 247, 370, 247, 440, 370];
+
+let started = false;
+let gameOver = false;
+let won = false;
+let frame = 0;
+let score = 0;
+let lives = 3;
+let speed = 0.018;
+let roadPosition = 0;
+let hitFlash = 0;
+let invulnerable = 0;
+let spawnTimer = 0;
+const WIN_SCORE = 201;
+
+const keys = {
+  left:false,
+  right:false,
+  up:false,
+  down:false
+}
+const player = {
+  x: 0,
+  targetX: 0,
+  y: 405,
+  w: 125,
+  h: 88
+};
+
+let obstacles = [];
+
+const obstacleTypes = [
+  { kind:'car', color:'#dc2626', window:'#111827' },
+  { kind:'car', color:'#2563eb', window:'#111827' },
+  { kind:'car', color:'#f97316', window:'#111827' },
+  { kind:'truck', color:'#64748b', window:'#111827' },
+  { kind:'cone', color:'#f97316', window:'#ffffff' },
+  { kind:'hole', color:'#020617', window:'#334155' }
+];
+
+window.addEventListener('keydown', e => {
+  if(e.code === 'ArrowLeft') keys.left = true;
+  if(e.code === 'ArrowRight') keys.right = true;
+  if(e.code === 'ArrowUp') keys.up = true;
+  if(e.code === 'ArrowDown') keys.down = true;
+
+  if(e.code === 'Space'){
+    startMusic();
+    if(gameOver || won) resetGame();
+    started = true;
+  }
+});
+
+window.addEventListener('keyup', e => {
+  if(e.code === 'ArrowLeft') keys.left = false;
+  if(e.code === 'ArrowRight') keys.right = false;
+  if(e.code === 'ArrowUp') keys.up = false;
+  if(e.code === 'ArrowDown') keys.down = false;
+});
+
+canvas.addEventListener('click', e => {
+  startMusic();
+
+  if(won){
+    handleWinClick(e);
+    return;
+  }
+
+  if(gameOver) resetGame();
+  started = true;
+});
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  startMusic();
+
+  if(won){
+    handleWinTouch(e);
+    return;
+  }
+
+  if(gameOver) resetGame();
+  started = true;
+});
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if(won || gameOver) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const touchX = e.touches[0].clientX - rect.left;
+  const percent = touchX / rect.width;
+  player.targetX = (percent - 0.5) * 2;
+  player.targetX = Math.max(-0.9, Math.min(0.9, player.targetX));
+});
+
+function startMusic(){
+  if(musicStarted) return;
+  musicStarted = true;
+
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  musicTimer = setInterval(() => {
+    if(!audioCtx) return;
+
+    // Baja volumen si terminó el juego, pero no corta de golpe
+    const volume = (gameOver || won) ? 0.018 : 0.045;
+    const freq = melody[musicStep % melody.length];
+
+    playTone(freq, 0.09, 'square', volume);
+
+    // bajo tipo persecución
+    if(musicStep % 2 === 0){
+      playTone(freq / 2, 0.12, 'triangle', volume * 0.9);
+    }
+
+    // hi-hat retro
+    if(musicStep % 3 === 0){
+      playNoise(0.035, volume * 0.5);
+    }
+
+    musicStep++;
+  }, 115);
+}
+
+function playTone(freq, duration, wave = 'square', volume = 0.04){
+  if(!audioCtx) return;
+
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+
+  osc.type = wave;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration);
+}
+
+function playNoise(duration = 0.04, volume = 0.02){
+  if(!audioCtx) return;
+
+  const bufferSize = audioCtx.sampleRate * duration;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  for(let i = 0; i < bufferSize; i++){
+    data[i] = Math.random() * 2 - 1;
+  }
+
+  const noise = audioCtx.createBufferSource();
+  const gain = audioCtx.createGain();
+
+  noise.buffer = buffer;
+  gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+
+  noise.connect(gain);
+  gain.connect(audioCtx.destination);
+  noise.start();
+}
+
+function playCrashSound(){
+  playTone(90, 0.18, 'sawtooth', 0.10);
+  setTimeout(() => playTone(65, 0.20, 'square', 0.08), 120);
+  setTimeout(() => playNoise(0.18, 0.07), 60);
+}
+
+function playWinSound(){
+  playTone(330, 0.10, 'square', 0.08);
+  setTimeout(() => playTone(440, 0.10, 'square', 0.08), 110);
+  setTimeout(() => playTone(660, 0.16, 'square', 0.08), 230);
+}
+
+function handleWinClick(e){
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+
+  if(isInsideBenefitButton(x,y)){
+    openWhatsApp();
+  }
+}
+
+function handleWinTouch(e){
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const x = (e.touches[0].clientX - rect.left) * scaleX;
+  const y = (e.touches[0].clientY - rect.top) * scaleY;
+
+  if(isInsideBenefitButton(x,y)){
+    openWhatsApp();
+  }
+}
+
+function isInsideBenefitButton(x,y){
+  return x >= 310 && x <= 590 && y >= 320 && y <= 372;
+}
+
+function openWhatsApp(){
+  const message = encodeURIComponent('Hola Riccardo, llegué al choque en tu juego y quiero mi monedero electrónico para seguro de auto, mi monedro electronico es el 23428');
+  window.open('https://wa.me/' + WHATSAPP_NUMBER + '?text=' + message, '_blank');
+}
+
+function resetGame(){
+  started = true;
+  gameOver = false;
+  won = false;
+  frame = 0;
+  score = 0;
+  lives = 3;
+  speed = 0.018;
+  roadPosition = 0;
+  player.x = 0;
+  player.targetX = 0;
+  obstacles = [];
+  hitFlash = 0;
+  invulnerable = 0;
+  spawnTimer = 0;
+}
+
+function spawnObstacle(){
+  const type = obstacleTypes[Math.floor(Math.random() * obstacleTypes.length)];
+  const laneOptions = [-0.62, -0.32, 0, 0.32, 0.62];
+  const lane = laneOptions[Math.floor(Math.random() * laneOptions.length)] + (Math.random() * 0.08 - 0.04);
+
+  obstacles.push({
+    x: lane,
+    z: 0.02,
+    type,
+    wobble: Math.random() * Math.PI * 2
+  });
+}
+
+function update(){
+  if(!started || gameOver || won) return;
+
+  frame++;
+  score++;
+
+  if(Math.floor(score / 10) >= WIN_SCORE){
+    won = true;
+    obstacles = [];
+    playWinSound();
+    return;
+  }
+
+  roadPosition += speed;
+
+  if(hitFlash > 0) hitFlash--;
+  if(invulnerable > 0) invulnerable--;
+
+  // Dificultad progresiva
+  if(frame % 360 === 0){
+    speed += 0.0015;
+  }
+
+  if(keys.left) player.targetX -= 0.04;
+  if(keys.right) player.targetX += 0.04;
+  if(keys.up) speed += 0.00045;
+  if(keys.down) speed -= 0.00055;
+
+  speed = Math.max(0.012, Math.min(0.052, speed));
+  player.targetX = Math.max(-0.9, Math.min(0.9, player.targetX));
+  player.x += (player.targetX - player.x) * 0.2;
+
+  // Tráfico más frecuente conforme sube la velocidad
+  spawnTimer++;
+  const spawnRate = Math.max(24, 82 - Math.floor(speed * 1000));
+  if(spawnTimer >= spawnRate){
+    spawnObstacle();
+    spawnTimer = 0;
+
+    // A veces salen dos obstáculos
+    if(score > 400 && Math.random() < 0.35){
+      spawnObstacle();
+    }
+  }
+
+  obstacles.forEach(o => {
+    o.z += speed * (o.type.kind === 'truck' ? 0.82 : 1);
+    o.wobble += 0.04;
+  });
+
+  obstacles = obstacles.filter(o => o.z < 1.22);
+
+  for(let i = obstacles.length - 1; i >= 0; i--){
+    const o = obstacles[i];
+
+    if(o.z > 0.78 && o.z < 1.08){
+      const p = project(o.x, o.z);
+      const playerScreenX = canvas.width / 2 + player.x * 290;
+      const dist = Math.abs(p.x - playerScreenX);
+      const hitRange = getObstacleHitRange(o, p);
+
+      if(dist < hitRange && invulnerable <= 0){
+        obstacles.splice(i,1);
+        lives--;
+        hitFlash = 22;
+        invulnerable = 80;
+
+        if(lives <= 0){
+          gameOver = true;
+          playCrashSound();
+        } else {
+          playTone(130, 0.08, 'square', 0.06);
+        }
+      }
+    }
+  }
+}
+
+function getObstacleHitRange(o, p){
+  if(o.type.kind === 'truck') return p.size * 0.72 + player.w * 0.24;
+  if(o.type.kind === 'hole') return p.size * 0.50 + player.w * 0.20;
+  if(o.type.kind === 'cone') return p.size * 0.38 + player.w * 0.18;
+  return p.size * 0.55 + player.w * 0.24;
+}
+
+function project(x, z){
+  const horizonY = 145;
+  const bottomY = 500;
+
+  const perspective = Math.pow(z, 1.75);
+  const y = horizonY + perspective * (bottomY - horizonY);
+  const roadWidth = 45 + perspective * 760;
+  const screenX = canvas.width / 2 + x * roadWidth * 0.48;
+  const size = 12 + perspective * 95;
+
+  return { x: screenX, y, roadWidth, size, perspective };
+}
+
+function drawSky(){
+  const gradient = ctx.createLinearGradient(0,0,0,220);
+  gradient.addColorStop(0,'#312e81');
+  gradient.addColorStop(0.45,'#db2777');
+  gradient.addColorStop(1,'#fb923c');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0,0,canvas.width,220);
+
+  // sol
+  ctx.fillStyle = '#fde68a';
+  ctx.fillRect(410,78,80,80);
+  ctx.fillStyle = '#facc15';
+  ctx.fillRect(426,94,48,48);
+
+  // nubes pixel
+  ctx.fillStyle = 'rgba(255,180,120,0.55)';
+  for(let i=0;i<8;i++){
+    const x = 60 + i*110 + Math.sin(frame*0.003+i)*10;
+    const y = 35 + (i%3)*25;
+    ctx.fillRect(x,y,70,8);
+    ctx.fillRect(x+28,y-10,46,8);
+  }
+}
+
+function drawCity(){
+  const baseY = 145;
+  const offset = (roadPosition * 300) % 120;
+
+  for(let i=-1; i<10; i++){
+    const x = i*115 - offset*0.25;
+    const h = 45 + ((i*37) % 70);
+
+    ctx.fillStyle = '#1e1b4b';
+    ctx.fillRect(x, baseY - h, 70, h);
+
+    ctx.fillStyle = '#f97316';
+    for(let wx=x+10; wx<x+60; wx+=18){
+      for(let wy=baseY-h+12; wy<baseY-8; wy+=20){
+        if((Math.floor(wx+wy+frame/20)) % 3 !== 0){
+          ctx.fillRect(wx,wy,5,5);
+        }
+      }
+    }
+  }
+}
+
+function drawRoad(){
+  const horizonY = 145;
+  const bottomY = 500;
+
+  // laterales
+  ctx.fillStyle = '#14532d';
+  ctx.fillRect(0,horizonY,canvas.width,bottomY-horizonY);
+
+  // carretera base
+  ctx.fillStyle = '#1f2937';
+  ctx.beginPath();
+  ctx.moveTo(canvas.width/2 - 28, horizonY);
+  ctx.lineTo(canvas.width/2 + 28, horizonY);
+  ctx.lineTo(canvas.width/2 + 420, bottomY);
+  ctx.lineTo(canvas.width/2 - 420, bottomY);
+  ctx.closePath();
+  ctx.fill();
+
+  // segmentos de carretera: aquí nace el movimiento real
+  const segments = 34;
+  for(let i=0; i<segments; i++){
+    let z1 = ((i / segments) + roadPosition) % 1;
+    let z2 = (((i+1) / segments) + roadPosition) % 1;
+    if(z2 < z1) z2 = 1;
+
+    const p1 = project(0, z1);
+    const p2 = project(0, Math.min(z2, 0.999));
+
+    const left1 = canvas.width/2 - p1.roadWidth/2;
+    const right1 = canvas.width/2 + p1.roadWidth/2;
+    const left2 = canvas.width/2 - p2.roadWidth/2;
+    const right2 = canvas.width/2 + p2.roadWidth/2;
+
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.035)' : 'rgba(0,0,0,0.10)';
+    ctx.beginPath();
+    ctx.moveTo(left1,p1.y);
+    ctx.lineTo(right1,p1.y);
+    ctx.lineTo(right2,p2.y);
+    ctx.lineTo(left2,p2.y);
+    ctx.closePath();
+    ctx.fill();
+
+    // bordes blancos
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 2 + p2.perspective*5;
+    ctx.beginPath();
+    ctx.moveTo(left1,p1.y);
+    ctx.lineTo(left2,p2.y);
+    ctx.moveTo(right1,p1.y);
+    ctx.lineTo(right2,p2.y);
+    ctx.stroke();
+
+    // línea central amarilla intermitente
+    if(i % 2 === 0){
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = 2 + p2.perspective*10;
+      ctx.beginPath();
+      ctx.moveTo(canvas.width/2, p1.y);
+      ctx.lineTo(canvas.width/2, p2.y);
+      ctx.stroke();
+    }
+
+    // carriles blancos
+    if(i % 2 === 0){
+      ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+      ctx.lineWidth = 1 + p2.perspective*5;
+
+      const lane1a = canvas.width/2 - p1.roadWidth*0.22;
+      const lane1b = canvas.width/2 - p2.roadWidth*0.22;
+      const lane2a = canvas.width/2 + p1.roadWidth*0.22;
+      const lane2b = canvas.width/2 + p2.roadWidth*0.22;
+
+      ctx.beginPath();
+      ctx.moveTo(lane1a,p1.y);
+      ctx.lineTo(lane1b,p2.y);
+      ctx.moveTo(lane2a,p1.y);
+      ctx.lineTo(lane2b,p2.y);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawPlayerCar(){
+  const x = canvas.width / 2 + player.x * 290;
+  const y = player.y;
+
+  if(invulnerable > 0 && frame % 8 < 4){
+    ctx.globalAlpha = 0.55;
+  }
+
+  // sombra
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(x-70,y+62,140,18);
+
+  // llantas
+  ctx.fillStyle = '#020617';
+  ctx.fillRect(x-68,y+32,25,52);
+  ctx.fillRect(x+43,y+32,25,52);
+
+  // cuerpo verde
+  ctx.fillStyle = '#16a34a';
+  ctx.fillRect(x-62,y+10,124,55);
+
+  // franja morada
+  ctx.fillStyle = '#7c3aed';
+  ctx.fillRect(x-62,y+34,124,16);
+
+  // cajuela y defensa
+  ctx.fillStyle = '#e5e7eb';
+  ctx.fillRect(x-48,y+56,96,12);
+
+  // vidrio
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(x-42,y-22,84,34);
+  ctx.fillStyle = '#38bdf8';
+  ctx.fillRect(x-34,y-16,68,22);
+
+  // torreta
+  ctx.fillStyle = '#22c55e';
+  ctx.fillRect(x-45,y-34,38,12);
+  ctx.fillStyle = frame % 18 < 9 ? '#facc15' : '#fb923c';
+  ctx.fillRect(x-7,y-38,18,18);
+  ctx.fillStyle = '#7c3aed';
+  ctx.fillRect(x+12,y-34,38,12);
+
+  // luces
+  ctx.fillStyle = frame % 20 < 10 ? '#f97316' : '#facc15';
+  ctx.fillRect(x-56,y+44,18,14);
+  ctx.fillRect(x+38,y+44,18,14);
+
+  // texto
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 14px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText('AJUSTADOR', x, y+47);
+
+  ctx.globalAlpha = 1;
+}
+
+function drawObstacle(o){
+  const p = project(o.x, o.z);
+  const size = p.size;
+  const x = p.x;
+  const y = p.y;
+
+  if(o.type.kind === 'cone'){
+    drawCone(x,y,size);
+    return;
+  }
+
+  if(o.type.kind === 'hole'){
+    drawHole(x,y,size);
+    return;
+  }
+
+  if(o.type.kind === 'truck'){
+    drawTruck(x,y,size,o.type.color);
+    return;
+  }
+
+  drawTrafficCar(x,y,size,o.type.color);
+}
+
+function drawTrafficCar(x,y,size,color){
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(x-size*0.46, y+size*0.08, size*0.92, size*0.16);
+
+  ctx.fillStyle = color;
+  ctx.fillRect(x-size*0.48, y-size*0.72, size*0.96, size*0.54);
+
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(x-size*0.30, y-size*0.64, size*0.60, size*0.22);
+
+  ctx.fillStyle = '#facc15';
+  ctx.fillRect(x-size*0.40, y-size*0.30, size*0.18, size*0.10);
+  ctx.fillRect(x+size*0.22, y-size*0.30, size*0.18, size*0.10);
+
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = Math.max(2,size*0.05);
+  ctx.strokeRect(x-size*0.48, y-size*0.72, size*0.96, size*0.54);
+}
+
+function drawTruck(x,y,size,color){
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(x-size*0.55, y+size*0.08, size*1.10, size*0.18);
+
+  ctx.fillStyle = color;
+  ctx.fillRect(x-size*0.58, y-size*0.90, size*1.16, size*0.72);
+
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(x-size*0.38, y-size*0.78, size*0.76, size*0.24);
+
+  ctx.fillStyle = '#facc15';
+  ctx.fillRect(x-size*0.46, y-size*0.30, size*0.18, size*0.10);
+  ctx.fillRect(x+size*0.28, y-size*0.30, size*0.18, size*0.10);
+
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = Math.max(2,size*0.05);
+  ctx.strokeRect(x-size*0.58, y-size*0.90, size*1.16, size*0.72);
+}
+
+function drawCone(x,y,size){
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(x-size*0.35, y+size*0.05, size*0.70, size*0.14);
+
+  ctx.fillStyle = '#f97316';
+  ctx.beginPath();
+  ctx.moveTo(x, y-size*0.85);
+  ctx.lineTo(x-size*0.42, y-size*0.12);
+  ctx.lineTo(x+size*0.42, y-size*0.12);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(x-size*0.24, y-size*0.42, size*0.48, size*0.10);
+
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = Math.max(2,size*0.04);
+  ctx.stroke();
+}
+
+function drawHole(x,y,size){
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.beginPath();
+  ctx.ellipse(x, y-size*0.20, size*0.50, size*0.18, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.strokeStyle = '#64748b';
+  ctx.lineWidth = Math.max(2,size*0.04);
+  ctx.stroke();
+}
+
+function drawHUD(){
+  ctx.fillStyle = 'rgba(0,0,0,0.82)';
+  ctx.fillRect(20,20,230,62);
+  ctx.strokeStyle = '#facc15';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(20,20,230,62);
+
+  ctx.fillStyle = '#facc15';
+  ctx.font = '24px Courier New';
+  ctx.textAlign = 'left';
+  ctx.fillText('VEL: ' + Math.floor(speed * 5000), 42, 58);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.82)';
+  ctx.fillRect(590,20,290,62);
+  ctx.strokeStyle = '#facc15';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(590,20,290,62);
+
+  ctx.fillStyle = '#facc15';
+  ctx.font = '22px Courier New';
+  ctx.fillText('PUNTOS: ' + Math.floor(score / 10), 612, 58);
+
+  // vidas
+  ctx.fillStyle = 'rgba(0,0,0,0.82)';
+  ctx.fillRect(20,92,170,48);
+  ctx.strokeStyle = '#facc15';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(20,92,170,48);
+
+  ctx.fillStyle = '#ef4444';
+  ctx.font = '24px Courier New';
+  let hearts = '';
+  for(let i=0; i<lives; i++) hearts += '♥ ';
+  ctx.fillText(hearts, 42, 125);
+
+  if(!started){
+    drawCenterBox('AJUSTADOR RUNNER', 'ESPACIO / CLICK PARA INICIAR');
+  }
+
+  if(gameOver){
+    drawCenterBox('GAME OVER', 'ESPACIO / CLICK PARA REINTENTAR');
+  }
+
+  if(won){
+    drawWinScreen();
+  }
+}
+
+function drawWinScreen(){
+  drawCrashScene();
+
+  ctx.fillStyle = 'rgba(0,0,0,0.82)';
+  ctx.fillRect(135,150,630,220);
+  ctx.strokeStyle = '#22c55e';
+  ctx.lineWidth = 5;
+  ctx.strokeRect(135,150,630,220);
+
+  ctx.fillStyle = '#22c55e';
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 34px Courier New';
+  ctx.fillText('¡LLEGASTE AL CHOQUE!', 450, 202);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '20px Courier New';
+  ctx.fillText('El ajustador llegó a tiempo.', 450, 242);
+  ctx.fillText('Ganaste un monedero electrónico con', 450, 265);
+  ctx.fillText('$500 pesos para el seguro de tu auto. ', 450, 285);
+  ctx.fillText('Tu monedero es el numero "23428"', 450, 305)
+
+  // Botón WhatsApp
+  ctx.fillStyle = '#22c55e';
+  ctx.fillRect(310,320,280,52);
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(310,320,280,52);
+
+  ctx.fillStyle = '#000000';
+  ctx.font = 'bold 18px Courier New';
+  ctx.fillText('OBTENER BENEFICIO', 450, 343);
+  ctx.fillText('CLICK AQUI', 450, 363);
+}
+
+function drawCrashScene(){
+  const x = 450;
+  const y = 185;
+
+  // humo pixelado
+  ctx.fillStyle = 'rgba(229,231,235,0.85)';
+  ctx.fillRect(x - 78, y - 42, 28, 18);
+  ctx.fillRect(x - 55, y - 58, 34, 20);
+  ctx.fillRect(x + 35, y - 50, 32, 18);
+  ctx.fillRect(x + 60, y - 34, 25, 16);
+
+  // auto rojo chocado
+  ctx.fillStyle = '#dc2626';
+  ctx.fillRect(x - 96, y - 8, 82, 28);
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(x - 78, y - 18, 42, 16);
+  ctx.fillStyle = '#facc15';
+  ctx.fillRect(x - 92, y + 8, 12, 8);
+  ctx.fillRect(x - 28, y + 8, 12, 8);
+  ctx.fillStyle = '#020617';
+  ctx.fillRect(x - 88, y + 20, 16, 10);
+  ctx.fillRect(x - 36, y + 20, 16, 10);
+
+  // auto azul chocado
+  ctx.fillStyle = '#2563eb';
+  ctx.fillRect(x + 12, y + 6, 88, 30);
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(x + 34, y - 6, 44, 16);
+  ctx.fillStyle = '#facc15';
+  ctx.fillRect(x + 18, y + 20, 12, 8);
+  ctx.fillRect(x + 82, y + 20, 12, 8);
+  ctx.fillStyle = '#020617';
+  ctx.fillRect(x + 22, y + 36, 16, 10);
+  ctx.fillRect(x + 74, y + 36, 16, 10);
+
+  // impacto
+  ctx.fillStyle = '#facc15';
+  ctx.fillRect(x - 8, y + 8, 16, 16);
+  ctx.fillRect(x - 16, y + 14, 32, 4);
+  ctx.fillRect(x - 2, y, 4, 32);
+
+  // conos
+  drawMiniCone(x - 130, y + 45);
+  drawMiniCone(x + 130, y + 45);
+}
+
+function drawMiniCone(x,y){
+  ctx.fillStyle = '#f97316';
+  ctx.beginPath();
+  ctx.moveTo(x, y - 24);
+  ctx.lineTo(x - 15, y + 8);
+  ctx.lineTo(x + 15, y + 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(x - 8, y - 6, 16, 4);
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function drawCenterBox(title, subtitle){
+  ctx.fillStyle = 'rgba(0,0,0,0.78)';
+  ctx.fillRect(190,180,520,125);
+  ctx.strokeStyle = '#facc15';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(190,180,520,125);
+
+  ctx.fillStyle = '#facc15';
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 34px Courier New';
+  ctx.fillText(title, 450, 230);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '18px Courier New';
+  ctx.fillText(subtitle, 450, 265);
+}
+
+function drawHitFlash(){
+  if(hitFlash > 0){
+    ctx.fillStyle = 'rgba(239,68,68,0.24)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
+}
+
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  drawSky();
+  drawCity();
+  drawRoad();
+
+  const sorted = [...obstacles].sort((a,b) => a.z - b.z);
+  sorted.forEach(drawObstacle);
+
+  drawPlayerCar();
+  drawHitFlash();
+  drawHUD();
+}
+
+function loop(){
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+
+</div>
+
+</body>
+</html>
